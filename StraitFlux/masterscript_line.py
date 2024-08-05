@@ -44,6 +44,10 @@ def transports(
     path_save="",
     path_indices="",
     path_mesh="",
+    showplots = False,
+    saveplots = True,
+    savegrid = True,
+    save_indices = True,
     saving=True,
 ):
     """Calculation of Transports using line integration
@@ -84,27 +88,68 @@ def transports(
 
     partial_func = partial(prepro._preprocess1)
 
-    try:
-        indices = xa.open_dataset(path_indices + model + "_" + strait + "_indices.nc")
-    except OSError:
-        print("calc indices")
-        print("read and load files for indices")
+    print("read and load files for indices, grid and mesh")
+
+    # load files for the indices, depending on if the file is provided as an xarray
+    # file or as a string, read the file
+
+    if type(file_t) == str:
         ti = xa.open_mfdataset(file_t, preprocess=partial_func).isel(time=0)
+    elif type(file_t) == xa.core.dataset.Dataset:
+        ti = partial_func(file_t).isel(time=0)
+    else:
+        print("please provide either a string or an array dataset")
+
+    if type(file_u) == str:
         ui = xa.open_mfdataset(file_u, preprocess=partial_func).isel(time=0)
+    elif type(file_u) == xa.core.dataset.Dataset:
+        ui = partial_func(file_u).isel(time=0)
+    else:
+        print("please provide either a string or an array dataset")
+
+    if type(file_v) == str:
         vi = xa.open_mfdataset(file_v, preprocess=partial_func).isel(time=0)
-        try:
-            with ProgressBar():
-                ti = ti.load()
-                ui = ui.load()
-                vi = vi.load()
-        except NameError:
+    elif type(file_v) == xa.core.dataset.Dataset:
+        vi = partial_func(file_v).isel(time=0)
+    else:
+        print("please provide either a string or an array dataset")
+    
+    # if the files have been loaded previously, the progressbar will not show
+    # because the process is too quick
+    try:
+        with ProgressBar():
             ti = ti.load()
             ui = ui.load()
             vi = vi.load()
+    except NameError:
+        ti = ti.load()
+        ui = ui.load()
+        vi = vi.load()
+
+    # to save memory, if the indices are calculated before already, use that
+    try:
+        indices = xa.open_dataset(path_indices + model + "_" + strait + "_indices.nc")
+    
+    # if the indices haven't been calculated before, use the datasets read above
+    except OSError:
+        print("calc indices")
+        
+        # check_availability indices is a funcction from the indices.py script
+        # indices returns an xarray dataset with two dimensions, and it prints
+        # a number from the indices.check_res() function
         indices, line = check_availability_indices(
             ti, strait, model, coords, lon_p, lat_p, set_latlon
         )
+
+        # prepare_indices prepares the points when ugrid or vgrid have to be choosen.
+        # out_u/ out_v: np.array with indices where ugrid/ vgrid needs to be selected
+        # out_u_vz: np.array with signs for the indices on ugrid
+        out_u, out_v, out_u_vz = prepare_indices(indices)
+
+        # selecting the indices that are not 0
         i2 = indices.indices.where(indices.indices != 0)
+        
+        # create a plot with the indices, showing and saving is optional
         try:
             plt.pcolormesh((ti.thetao / ti.thetao), cmap="tab20c")
             plt.scatter(i2[:, 2], i2[:, 3], color="tab:red", s=0.1, marker="x")
@@ -112,57 +157,50 @@ def transports(
             plt.title(model + "_" + strait, fontsize=14)
             plt.ylabel("y", fontsize=14)
             plt.xlabel("x", fontsize=14)
-            plt.savefig(path_save + strait + "_" + model + "_indices.png")
+            if showplots:
+                plt.show()
+            if saveplots:
+                plt.savefig(path_save + strait + "_" + model + "_indices.png")
             plt.close()
         except NameError:
             print("skipping Plot")
-        out_u, out_v, out_u_vz = prepare_indices(indices)
-        if product == "ice":
-            func.check_indices(
-                indices, out_u, out_v, ti, ui, vi, strait, model, path_save
+               
+        func.check_indices(
+            indices, out_u, out_v, ti, ui, vi, strait, model, path_save
             )
-        else:
-            func.check_indices(
-                indices, out_u, out_v, ti, ui, vi, strait, model, path_save
-            )
-        if saving == True:
+        if save_indices:
+            print('indices are saved to netcdf')
             indices.to_netcdf(path_indices + model + "_" + strait + "_indices.nc")
+        else:
+            print('indices are not saved')
 
     out_u, out_v, out_u_vz = prepare_indices(indices)
+    
+    # check the grid
     if Arakawa in ["Arakawa-A", "Arakawa-B", "Arakawa-C"]:
         grid = Arakawa
+        print('grid is ', Arakawa)
     elif Arakawa == "":
+
+        # try if a grif file is provided or produced in a previous run of the function
         try:
             file = open(path_mesh + model + "grid.txt", "r")
             grid = file.read()
+        
+        # if no grid file is provided, the line above will throw an error
         except OSError:
-            try:
-                grid = func.check_Arakawa(ui, vi, ti, model)
-                if saving == True:
-                    with open(path_mesh + model + "grid.txt", "w") as f:
-                        f.write(grid)
-            except NameError:
-                print("read and load files for grid check")
-                ti = xa.open_mfdataset(file_t, preprocess=partial_func).isel(time=0)
-                ui = xa.open_mfdataset(file_u, preprocess=partial_func).isel(time=0)
-                vi = xa.open_mfdataset(file_v, preprocess=partial_func).isel(time=0)
-                try:
-                    with ProgressBar():
-                        ti = ti.load()
-                        ui = ui.load()
-                        vi = vi.load()
-                except NameError:
-                    ti = ti.load()
-                    ui = ui.load()
-                    vi = vi.load()
-                grid = func.check_Arakawa(ui, vi, ti, model)
-                if saving == True:
-                    with open(path_mesh + model + "grid.txt", "w") as f:
-                        f.write(grid)
+            # determines the grid based on the latitudes and longitude
+            grid = func.check_Arakawa(ui, vi, ti, model)
+            
+        if savegrid:
+            with open(path_mesh + model + "grid.txt", "w") as f:
+                f.write(grid)
+            
     else:
         print("grid not known")
         sys.exit()
 
+    # return min and max x and y from u and v
     min_x = np.nanmin(
         (min(out_u[:, 0], default=np.nan), min(out_v[:, 0], default=np.nan))
     )
@@ -180,9 +218,14 @@ def transports(
         min_x = 0
         max_x = max_x + 1
 
+    # if the function was run before, the mesh for u and v will already have been
+    # calculated and saved
     try:
         mu = xa.open_dataset(path_mesh + "mesh_dyu_" + model + ".nc")
         mv = xa.open_dataset(path_mesh + "mesh_dxv_" + model + ".nc")
+
+    # if the function was not run before, either calculate the dxu/ dyu meshes
+    # or use the ones provided.
     except FileNotFoundError:
         if mesh_dxv != 0:
             mesh_dxv.to_dataset(name="dxv").to_netcdf(
@@ -195,43 +238,61 @@ def transports(
             mv = xa.open_dataset(path_mesh + "mesh_dxv_" + model + ".nc")
         else:
             print("calc horizontal meshes")
-            try:
-                mu, mv = prepro.calc_dxdy(model, ui, vi, path_mesh)
-            except NameError:
-                print("read and load files for mesh")
-                ui = xa.open_mfdataset(file_u, preprocess=partial_func).isel(time=0)
-                vi = xa.open_mfdataset(file_v, preprocess=partial_func).isel(time=0)
-                try:
-                    with ProgressBar():
-                        ui = ui.load()
-                        vi = vi.load()
-                except NameError:
-                    ui = ui.load()
-                    vi = vi.load()
-                mu, mv = prepro.calc_dxdy(model, ui, vi, path_mesh)
+            mu, mv = prepro.calc_dxdy(model, ui, vi, path_mesh)
 
     print("read t, u and v fields")
+    # for the actual u and v fielts, t, u and v are used
     partial_func = partial(
         prepro._preprocess2,
         lon_bnds=(int(min_x) - 1, int(max_x) + 1),
         lat_bnds=(int(min_y) - 1, int(max_y) + 1),
     )
-    t = xa.open_mfdataset(file_t, preprocess=partial_func, chunks={"time": 1})
-    u = xa.open_mfdataset(file_u, preprocess=partial_func, chunks={"time": 1})
-    v = xa.open_mfdataset(file_v, preprocess=partial_func, chunks={"time": 1})
-    if "time" in t.dims and t.dims["time"] > 1:
-        t = t.sel(time=slice(str(time_start), str(time_end)))
-        u = u.sel(time=slice(str(time_start), str(time_end)))
-        v = v.sel(time=slice(str(time_start), str(time_end)))
+
+    timeslice = slice(str(time_start), str(time_end))
+
+    if type(file_t) == str:
+        t = xa.open_mfdataset(file_t, preprocess=partial_func2, chunks={"time": 1})
+    elif type(file_t) == xa.core.dataset.Dataset:
+        t = partial_func2(file_t).chunk({"time": 1})
+    else:
+        print("please provide either a string or an array dataset")
+    if type(file_u) == str:
+        u = xa.open_mfdataset(file_u, preprocess=partial_func2, chunks={"time": 1})
+    elif type(file_u) == xa.core.dataset.Dataset:
+        u = partial_func2(file_u).chunk({"time": 1})
+    else:
+        print("please provide either a string or an array dataset")
+    if type(file_v) == str:
+        v = xa.open_mfdataset(file_v, preprocess=partial_func2, chunks={"time": 1})
+    elif type(file_v) == xa.core.dataset.Dataset:
+        v = partial_func2(file_v).chunk({"time": 1})
+    else:
+        print("please provide either a string or an array dataset")
+
+    if "time" in t.dims and t.sizes["time"] > 1:
+        t = t.sel(time=timeslice)
+        u = u.sel(time=timeslice)
+        v = v.sel(time=timeslice)
     elif "time" not in t.dims:
         t = t.expand_dims(dim={"time": 1})
         u = u.expand_dims(dim={"time": 1})
         v = v.expand_dims(dim={"time": 1})
-    deltaz = xa.open_mfdataset(file_z, preprocess=partial_func, chunks={"time": 1})[
-        ["thkcello"]
-    ]
+
+    # open the file with the cell thickness. According to the paper, there should be a 
+    # function calc_dydz, but it is not in the package
+    try:
+        if type(file_z) == str:
+            deltaz = xa.open_mfdataset(
+                file_z, preprocess=partial_func2, chunks={"time": 1}
+            )[["thkcello"]]
+        elif type(file_z) == xa.core.dataset.Dataset:
+            deltaz = partial_func2(file_z).chunk({"time": 1})[["thkcello"]]
+    except KeyError:
+        print("here you need to do something about using deptho instead of thkcello")
+        sys.exit()
+
     if "time" in deltaz.dims:
-        deltaz = deltaz.sel(time=slice(str(time_start), str(time_end)))
+        deltaz = deltaz.sel(time=timeslice)
     mu = mu.sel(
         x=slice(int(min_x) - 1, int(max_x) + 1), y=slice(int(min_y) - 1, int(max_y) + 1)
     ).load()
@@ -240,6 +301,8 @@ def transports(
     ).load()
 
     print("load t, u and v fields")
+    # if the files have already been read before, the progressbar will not show
+    # because the progress is too fast
     try:
         with ProgressBar():
             t = t.load()
@@ -252,12 +315,11 @@ def transports(
         v = v.load()
         deltaz = deltaz.load()
 
+    # with dzu3 and dzv3
     dzu3, dzv3 = func.calc_dz_faces(deltaz, grid, model, path_mesh)
-    trans = xa.Dataset(
-        {"tot_" + product + "_flux": (("time"), np.array(np.zeros(t.time.size)))},
-        coords=dict(time=t.time),
-    )
+        
     sign_v = []
+    
     indi = indices.indices[:, 2][indices.indices[:, 3] != 0]
     for ind in range(len(indi) - 1):
         if indi[ind] < indi[ind + 1]:
@@ -272,45 +334,84 @@ def transports(
     except IndexError:
         pass
 
+    # read salinity and 'substance' datasets
+    if product == "salt":
+        if type(file_s) == str:
+            Sdata = xa.open_mfdataset(
+                file_s, preprocess=partial_func2, chunks={"time": 1}
+            ).sel(time=timeslice)
+        elif type(file_s) == xa.core.dataset.Dataset:
+            Sdata = partial_func2(file_s).chunk({"time": 1}).sel(time=timeslice)
+
+    if product == "substance":
+        if type(file_substance) == str:
+            Substancedata = xa.open_mfdataset(
+                file_substance, preprocess=partial_func2, chunks={"time": 1}
+            ).sel(time=timeslice)
+        elif type(file_substance) == xa.core.dataset.Dataset:
+            Substancedata = (
+                partial_func2(file_substance).chunk({"time": 1}).sel(time=timeslice)
+            )
+    
+    # start the transport calculations
     print(" ...calculating transport")
-    trans_arr = []
     udata = u.uo
     vdata = v.vo
     Tdata = t
 
-    if product == "salt":
-        Sdata = xa.open_mfdataset(
-            file_s, preprocess=partial_func, chunks={"time": 1}
-        ).sel(time=slice(str(time_start), str(time_end)))
-
-    if product in ["volume", "heat", "salt"]:
+    # transform the product
+    if product in ["volume", "heat", "salt", "substance"]:
         udata, vdata2, dzu3, dzv3, mu2, mv2 = func.transform_Arakawa(
             grid, mu, mv, deltaz, dzu3, dzv3, udata, vdata
         )
 
+    # create a data array with the volumes for u and v
+    # depending on the native grid (Arakawa), and the mesh, mu2 and mv2 are
+    # calculated in the func.transform_Arakawa function
     if product == "volume":
-        print("calc u")
+        print("calc u: the x-ward volumetric transport rate in m3 s-1")
         udata = udata * mu2.dyu.values * dzu3.values
-        print("calc v")
+        print("calc v: the y-ward volumetric transport rate in m3 s-1")
         vdata = vdata * mv2.dxv.values * dzv3.values
+        unit = 'm3 s-1'
+        endunit = 'm3 s-1'
 
     if product == "heat":
         print("rolling T")
         Tudata = func.interp_TS(Tdata.thetao, "x")
         Tvdata = func.interp_TS(Tdata.thetao, "y")
-        print("calc u")
+        print("calc u: the x-ward transport rate of temperature in degC m3 s-1")
         udata = udata * mu2.dyu.values * dzu3.values * (Tudata.values - Tref)
-        print("calc v")
+        print("calc v: the y-ward transport rate of temperature in degC m3 s-1")
         vdata = vdata * mv2.dxv.values * dzv3.values * (Tvdata.values - Tref)
+        # note: to calculate heat transport, this needs to be multiplied by the 
+        # specific heat capacity and the density.
+        unit = 'degC m3 s-1'
+        endunit = 'degC s-1'
 
     if product == "salt":
         print("rolling S")
         Sudata = func.interp_TS(Sdata.so, "x")
         Svdata = func.interp_TS(Sdata.so, "y")
-        print("calc u")
+        print("calc u: the x-ward salinity transport rate in PSU m3 s-1")
         udata = udata * mu2.dyu.values * dzu3.values * Sudata.values
-        print("calc v")
+        print("calc v: the y-ward salinity transport rate in PSU m3 s-1")
         vdata = vdata * mv2.dxv.values * dzv3.values * Svdata.values
+        unit = 'PSU m3 s-1'
+        endunit = 'PSU s-1'
+
+    if product == "substance":
+        print("rolling Substance")
+        Substanceudata = func.interp_TS(Substancedata[substance_name], "x")
+        Substancevdata = func.interp_TS(Substancedata[substance_name], "y")
+        print("calc u: the x-ward ", Substancedata[substance_name].long_name, " transport rate in ", 
+              Substancedata[substance_name].units, " m3 s-1")
+        udata = udata * mu2.dyu.values * dzu3.values * Substanceudata.values
+        print("calc u: the y-ward ", Substancedata[substance_name].long_name, " transport rate in ", 
+              Substancedata[substance_name].units, " m3 s-1")
+        vdata = vdata * mv2.dxv.values * dzv3.values * Substancevdata.values
+        unit = str(Substancedata[substance_name].units + " m3 s-1")
+        endunit = str(Substancedata[substance_name].units + " s-1")
 
     if product == "ice":
         print("calc u")
@@ -318,89 +419,90 @@ def transports(
         print("calc v")
         vdata = vdata * mv.dxv.values * sit.sithick.values * sic.siconc.values
 
+    # replace all nans by 0
     udata = udata.fillna(0.0)
     vdata = vdata.fillna(0.0)
+
     print("calc line")
+    # here, we sum over depth
     if product in ["volume", "heat", "salt"]:
         udata = udata.sum(dim="lev")
         vdata = vdata.sum(dim="lev")
+
+    # create xarray datasets for datau and datav with dimensions time, x and y
     datau = xa.Dataset(
         {"inte": (("time", "y", "x"), udata.data)},
-        coords=(
-            {
-                "time": ("time", udata.time.data),
-                "x": ("x", udata.x.data),
-                "y": ("y", udata.y.data),
-            }
-        ),
+        coords={
+            "time": ("time", udata.time.data),
+            "x": ("x", udata.x.data),
+            "y": ("y", udata.y.data)
+        }
     )
     datav = xa.Dataset(
         {"inte": (("time", "y", "x"), vdata.data)},
-        coords=(
-            {
-                "time": ("time", vdata.time.data),
-                "x": ("x", vdata.x.data),
-                "y": ("y", vdata.y.data),
-            }
-        ),
+        coords={
+            "time": ("time", vdata.time.data),
+            "x": ("x", vdata.x.data),
+            "y": ("y", vdata.y.data),
+        }
     )
+
+    # create empty arrays for pointsu and pointsv
     pointsu = np.zeros(datau.inte.shape)
-    data1u = datau.inte
-
-    for l in range(len(out_u)):
-        if out_u_vz[l][2] == -1:
-            pointsu[
-                :, int(out_u_vz[l, 1] - min_y + 1), int(out_u_vz[l, 0] - min_x + 1)
-            ] = data1u[
-                :, int(out_u_vz[l, 1] - min_y + 1), int(out_u_vz[l, 0] - min_x + 1)
-            ] * (
-                -1
-            )
-        else:
-            pointsu[
-                :, int(out_u_vz[l, 1] - min_y + 1), int(out_u_vz[l, 0] - min_x + 1)
-            ] = data1u[
-                :, int(out_u_vz[l, 1] - min_y + 1), int(out_u_vz[l, 0] - min_x + 1)
-            ]
-
     pointsv = np.zeros(datav.inte.shape)
-    data1v = datav.inte
 
+    data1u = np.array(datau.inte)
+    data1v = np.array(datav.inte)
+
+    # modify pointsu based on out_u_vz conditions
+    for l in range(len(out_u)):
+        index_y = int(out_u_vz[l, 1] - min_y + 1)
+        index_x = int(out_u_vz[l, 0] - min_x + 1)
+
+        if out_u_vz[l][2] == -1:
+            pointsu[:, index_y, index_x] = data1u[:, index_y, index_x] * -1
+        else:
+            pointsu[:, index_y, index_x] = data1u[:, index_y, index_x]
+
+    # indi1 and indi2 are the indices of the cells of interest
     indi1 = indices.indices[:, 2][indices.indices[:, 3] != 0]
     indi2 = indices.indices[:, 3][indices.indices[:, 3] != 0]
 
+    # modify pointsv based on indices
     for m in range(len(indi1) - 1):
-        pointsv[:, int(indi2[m] - min_y + 1), int(indi1[m] - min_x + 1)] = (
-            data1v[:, int(indi2[m] - min_y + 1), int(indi1[m] - min_x + 1)] * sign_v[m]
-        )
+        index_y = int(indi2[m] - min_y + 1)
+        index_x = int(indi1[m] - min_x + 1)
+        pointsv[:, index_y, index_x] = data1v[:, index_y, index_x] * sign_v[m]
 
+    # combine and process the data
     vp = xa.Dataset({"v": (("time", "y", "x"), pointsv)}, coords=datav.coords)
     up = xa.Dataset({"u": (("time", "y", "x"), pointsu)}, coords=datau.coords)
-    ges_l = datau.copy()
+    
+    combined_l = datau.copy()
     ges_l["inte"] = vp["v"] + up["u"]
+    
+    # calculate heat transport H = Q * rho * cp * deltat (deltat calculated in udata)
     if product == "heat":
-        ges_l["inte"] = ges_l["inte"] * rho * cp
+        combined_l["inte"] = combined_l["inte"] * rho * cp
     elif product == "salt":
-        ges_l["inte"] = ges_l["inte"] * rho
-    # ges_l.to_netcdf(model+'_'+strait+'_test.nc')
-    summ = ges_l.sum(dim=["x", "y"])
-    summ = summ.inte
-    trans_arr = np.append(trans_arr, summ)
+        combined_l["inte"] = combined_l["inte"] * rho
+    
+    # integrate transport over x and y to get a total transport over the transect,
+    # a split in in- and outflow can be made here
+    trans = combined_l.sum(dim=["x", "y"]).rename(({'inte':'tot_' + product + 'flux'}))
 
-    trans[model] = (["time"], trans_arr)
-    trans = trans.drop_vars("tot_" + product + "_flux")
-    trans.to_netcdf(
-        path_save
-        + strait
-        + "_"
-        + product
-        + "_"
-        + model
-        + "_"
-        + str(time_start)
-        + "-"
-        + str(time_end)
-        + ".nc"
-    )
+    trans = trans.assign_attrs(
+         transect = strait,
+         model = model,
+         variable_id = str("tot_" + product + "_flux"))
+    trans[str("tot_" + product + "_flux")] = trans[str("tot_" + product + "_flux")].assign_attrs(
+         standard_name = str('Transport_rate_of_' + product),
+         long_name = str('Total ' + product + ' flux'), 
+         units = endunit,
+         comment = 'Transport rate calculated using the StraitFlux transports() function',
+         ) 
+    
+    if savetransport:
+        trans.to_netcdf(path_save + '_'.join([strait, product, model, years]) + ".nc")
 
     return trans
