@@ -166,11 +166,11 @@ def transports(
             print("skipping Plot")
                
         func.check_indices(
-            indices, out_u, out_v, ti, ui, vi, strait, model, path_save
+            indices, out_u, out_v, ti, ui, vi, strait, model, path_indices
             )
         if save_indices:
             print('indices are saved to netcdf')
-            indices.to_netcdf(path_indices + model + "_" + strait + "_indices.nc")
+            indices.to_netcdf(path_save + model + "_" + strait + "_indices.nc")
         else:
             print('indices are not saved')
 
@@ -193,7 +193,7 @@ def transports(
             grid = func.check_Arakawa(ui, vi, ti, model)
             
         if savegrid:
-            with open(path_mesh + model + "grid.txt", "w") as f:
+            with open(path_save + model + "grid.txt", "w") as f:
                 f.write(grid)
             
     else:
@@ -228,14 +228,14 @@ def transports(
     # or use the ones provided.
     except FileNotFoundError:
         if mesh_dxv != 0:
-            mesh_dxv.to_dataset(name="dxv").to_netcdf(
-                path_mesh + "mesh_dxv_" + model + ".nc"
+            mv = mesh_dxv.to_dataset(name="dxv")
+            mv.to_netcdf(
+                path_save + "mesh_dxv_" + model + ".nc"
             )
-            mesh_dyu.to_dataset(name="dyu").to_netcdf(
-                path_mesh + "mesh_dyu_" + model + ".nc"
+            mu = mesh_dyu.to_dataset(name="dyu")
+            mu.to_netcdf(
+                path_save + "mesh_dyu_" + model + ".nc"
             )
-            mu = xa.open_dataset(path_mesh + "mesh_dyu_" + model + ".nc")
-            mv = xa.open_dataset(path_mesh + "mesh_dxv_" + model + ".nc")
         else:
             print("calc horizontal meshes")
             mu, mv = prepro.calc_dxdy(model, ui, vi, path_mesh)
